@@ -238,7 +238,7 @@ Snowpack::Snowpack(const SnowpackConfig& i_cfg)
 	cfg.getValue("T_CRAZY_MIN", "SnowpackAdvanced", t_crazy_min);
 	cfg.getValue("T_CRAZY_MAX", "SnowpackAdvanced", t_crazy_max);
 	cfg.getValue("FORESTFLOOR_ALB", "SnowpackAdvanced", forestfloor_alb);
-
+	// cfg.getValue("ENHANCED_WIND_SLAB", "SnowpackAdvanced", enhanced_wind_slab);
 
 	/* Initial new snow parameters, see computeSnowFall()
 	* - that rg and rb are equal to 0.5*gsz and 0.5*bsz, respectively. Both given in millimetres
@@ -271,8 +271,8 @@ Snowpack::Snowpack(const SnowpackConfig& i_cfg)
 		new_snow_sp_wind = 0.75;
 		vw_dendricity = true;
 		rh_lowlim = 1.0;
-		bond_factor_rh = 1.0;
-		enhanced_wind_slab = false; //true; //
+		bond_factor_rh = 1.0; 
+		enhanced_wind_slab = true; //true; 
 	}
 
 	cfg.getValue("SNOW_EROSION", "SnowpackAdvanced", snow_erosion);
