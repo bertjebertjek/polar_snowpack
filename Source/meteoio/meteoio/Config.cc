@@ -16,6 +16,8 @@
     You should have received a copy of the GNU Lesser General Public License
     along with MeteoIO.  If not, see <http://www.gnu.org/licenses/>.
 */
+#include "meteoio/IOExceptions.h"
+#include <cstddef>
 #include <meteoio/Config.h>
 #include <meteoio/FileUtils.h>
 #include <meteoio/FStream.h>
@@ -30,8 +32,20 @@ using namespace std;
 
 namespace mio {
 
-static const char* defaultSection = "GENERAL";
+static const std::string defaultSection = "GENERAL";
 static const char NUM[] = "0123456789";
+
+//these are not defined as part of any class in order to avoid dragging a <regex> include into the Config.h header
+//arithmetic expression syntax, delimited by ${{ and }} and contains anything in between including sub-variables
+static const std::regex expr_regex(R"(\$\{\{(.+?)\}\})", std::regex::optimize);
+//environment variable syntax, delimited by ${env: and } and not sub-variables / expressions
+static const std::regex envvar_regex(R"(\$\{env:([^\$\{\}]+?)\})", std::regex::optimize);
+//variable refering to another key, delimited by ${ and } and can contain sub-variables / expressions
+static const std::regex var_regex(R"(\$\{((?!\{).*?)\}(?!\}))", std::regex::optimize);
+static const std::regex sub_expr_regex(R"(.*\$\{((?!\{).*?)\}(?!\}).*)", std::regex::optimize); //same as above but allowing match anywhere in the string
+//regex to try sorting the keys by numerical order of their index, so STATION2 comes before STATION10
+static const std::regex index_regex("([^0-9]+)([0-9]{1,9})$", std::regex::optimize); //limit the number of digits so it fits within an "int" for the call to atoi()
+static const std::regex section_regex(R"(^\[((?:\w|\-)+)\].*$)", std::regex::optimize); //valid chars for section: letters, numbers, _ and -
 
 //Constructors
 Config::Config() : properties(), sections(), sourcename(), configRootDir() {}
@@ -229,8 +243,6 @@ std::vector< std::pair<std::string, std::string> > Config::getValuesRegex(const 
 {
 	//regex for selecting the keys
 	static const std::regex user_regex(regex_str, std::regex::icase | std::regex::optimize);
-	//regex to try sorting the keys by numerical order of their index, so STATION2 comes before STATION10
-	static const std::regex index_regex("([^0-9]+)([0-9]{1,9})$", std::regex::optimize); //limit the number of digits so it fits within an "int" for the call to atoi()
 	std::smatch index_matches;
 	
 	IOUtils::toUpper(section);
@@ -279,7 +291,6 @@ std::vector< std::pair<std::string, std::string> > Config::getValuesRegex(const 
 
 std::vector< std::pair<std::string, std::string> > Config::getValues(std::string keymatch, std::string section, const bool& anywhere) const
 {
-	static const std::regex index_regex("([^0-9]+)([0-9]{1,9})", std::regex::optimize); //limit the number of digits so it fits within an "int" for the call to atoi()
 	std::smatch index_matches;
 	IOUtils::toUpper(section);
 	IOUtils::toUpper(keymatch);
@@ -401,7 +412,7 @@ void Config::write(const std::string& filename) const
 		unsigned int sectioncount = 0;
 		for (const auto& prop : properties) {
 			const std::string key_full( prop.first );
-			const std::string section( ConfigParser::extract_section(key_full) );
+			const std::string section( ConfigParser::extract_section(key_full, true) );
 
 			if (current_section != section) {
 				current_section = section;
@@ -578,40 +589,43 @@ std::vector< std::pair<std::string, std::string> > Config::getArgumentsForAlgori
 	return getArgumentsForAlgorithm(parname, algorithm+std::to_string(algo_index), section);
 }
 
+
 ///////////////////////////////////////////////////// ConfigParser helper class //////////////////////////////////////////
 //the local values must have priority -> we initialize from the given i_properties, overwrite from the local values 
 //and swap the two before returning i_properties
-ConfigParser::ConfigParser(const std::string& filename, std::map<std::string, std::string> &i_properties, std::set<std::string> &i_sections) : properties(i_properties), imported(), sections(), deferred_vars(), sourcename(filename)
+ConfigParser::ConfigParser(const std::string& filename, std::map<std::string, std::string> &i_properties, std::set<std::string> &i_sections) : properties(i_properties), imported(), sections(), vars(), sourcename(filename)
 {
 	parseFile(filename);
 	
-	//process potential deferred vars
-	size_t deferred_count = deferred_vars.size();
-	while (deferred_count>0) {
-		for (std::set<std::string>::iterator it = deferred_vars.begin(); it!=deferred_vars.end(); ) {
-			const std::string section( extract_section( *it ) );
-			std::string value( properties[ *it ] );
-			const bool status = processVars(value, section);
+	//expand all variables that might be used in key/values. 
+	//Instead of relying on a dependency tree between keys, we just keep on running on all keys that require expansion until 
+	//they are all done. If absolutely no replacement is done in a round, this means that there is a circular dependency...
+	while (!vars.empty()) {
+		bool hasSomeSuccesses = false; //it will be set to true once at least one variable could be expanded
+		
+		//loop over all key/values that contain variables to expand (and are therefore not yet part of the 'properties' map
+		for (std::map<std::string, std::vector<variable> >::iterator it = vars.begin(); it!=vars.end(); ) {
+			const std::string section( extract_section(it->first) );
+			std::vector<variable>& vecVars( it->second ); //for clarity
+			const bool status = expandVarsForKey(vecVars, section, hasSomeSuccesses);
 			
-			properties[ *it ] = value; //save the key/value pair
-			if (status) //the variable could be fully expanded
-				deferred_vars.erase( it++ );
-			else
+			if (status) { //all expansions could be done, the root of the tree contains the final string, remove the key from 'vars'
+				properties[it->first] = vecVars[0].value; //save the key/value pair
+				it = vars.erase(it);
+			} else {
 				++it;
+			}
 		}
-		const size_t new_deferred_count = deferred_vars.size();
-		if (new_deferred_count==deferred_count) {
-			std::string msg("In file "+filename+", the following keys could not be resolved (circular dependency? invalid variable name? syntax error?):");
-			for (const std::string& var : deferred_vars) 
-				msg.append( " "+var );
+		
+		if (!hasSomeSuccesses) { //not a single variable could be expanded
+			std::string msg("In file "+filename+", the following keys could not be resolved (circular dependency? undefined variable name?):");
+			for (const auto& var : vars) msg.append( " "+var.first );
 			throw InvalidArgumentException(msg, AT);
 		}
-		deferred_count = new_deferred_count;
 	}
 	
 	//swap the caller and local properties before returning, so the caller gets the new version
 	std::swap(properties, i_properties);
-
 	i_sections.insert(sections.begin(), sections.end());
 }
 
@@ -674,11 +688,11 @@ void ConfigParser::parseFile(const std::string& filename)
 
 bool ConfigParser::processSectionHeader(const std::string& line, std::string &section, const unsigned int& linenr)
 {
-	static const std::regex section_regex("^\\[((?:\\w|\\-)+)\\].*$", std::regex::optimize); //valid chars for section: letters, numbers, _ and -
 	std::smatch section_matches;
 	
 	if (std::regex_match(line, section_matches, section_regex)) {
-		static const std::regex sectionValidation_regex("^\\[((?:\\w|\\-)+)\\]\\s*((;|#).*)*$", std::regex::optimize); //valid chars for section: letters, numbers, _ and -. Any number of whitespaces after the section header, potentially comments too
+		//valid chars for section: letters, numbers, _ and -. Any number of whitespaces after the section header, potentially comments too
+		static const std::regex sectionValidation_regex(R"(^\[((?:\w|\-)+)\]\s*((;|#).*)*$)", std::regex::optimize); 
 		std::smatch sectionValidation_matches;
 		if (!std::regex_match(line, sectionValidation_matches, sectionValidation_regex))
 			throw IOException("Section header corrupt at line " + IOUtils::toString(linenr), AT);
@@ -690,107 +704,6 @@ bool ConfigParser::processSectionHeader(const std::string& line, std::string &se
 	}
 
 	return false;
-}
-
-/**
-* @brief Process keys that refer to environment variables
-* @details Environment variables are used as key = ${env:envvar}.
-*/
-void ConfigParser::processEnvVars(std::string& value)
-{
-	size_t pos_start;
-	
-	//process env. variables
-	static const std::string env_var_marker( "${env:" );
-	static const size_t len_env_var_marker = env_var_marker.length();
-	while ((pos_start = value.find(env_var_marker)) != std::string::npos) {
-		const size_t pos_end = value.find("}", pos_start);
-		if (pos_end==std::string::npos || pos_end<(pos_start+len_env_var_marker+1)) //at least 1 char between "${env:" and "}"
-			throw InvalidFormatException("Wrong syntax for environment variable: '"+value+"'", AT);
-		const size_t next_start = value.find("${", pos_start+len_env_var_marker);
-		if (next_start!=std::string::npos && next_start<pos_end)
-			throw InvalidFormatException("Wrong syntax for environment variable: '"+value+"'", AT);
-		
-		const size_t len = pos_end - (pos_start+len_env_var_marker); //we have tested above that this is >=1
-		const std::string envVar( value.substr(pos_start+len_env_var_marker, len ) );
-		char *tmp = getenv( envVar.c_str() );
-		if (tmp==nullptr) 
-			throw InvalidNameException("Environment variable '"+envVar+"' declared in ini file could not be resolved", AT);
-		
-		value.replace(pos_start, pos_end+1, std::string(tmp)); //we also replace the closing "}"
-	}
-}
-
-void ConfigParser::processExpr(std::string& value)
-{
-	size_t pos_start;
-	
-	//process env. variables
-	static const std::string expr_marker( "${{" );
-	static const size_t len_expr_marker = expr_marker.length();
-	while ((pos_start = value.find(expr_marker)) != std::string::npos) {
-		const size_t pos_end = value.find("}}", pos_start);
-		if (pos_end==std::string::npos || pos_end<(pos_start+len_expr_marker+1)) //at least 1 char between "${{" and "}}"
-			throw InvalidFormatException("Wrong syntax for arithmetic expression: '"+value+"'", AT);
-		const size_t next_start = value.find(expr_marker, pos_start+len_expr_marker);
-		if (next_start!=std::string::npos && next_start<pos_end)
-			throw InvalidFormatException("Wrong syntax for arithmetic expression: '"+value+"'", AT);
-		
-		const size_t len = pos_end - (pos_start+len_expr_marker); //we have tested above that this is >=1
-		const std::string expression( value.substr(pos_start+len_expr_marker, len ) );
-		int status_code;
-		const double val = te_interp(expression.c_str(), &status_code);
-		
-		if (status_code!=0)
-			throw InvalidNameException("Arithmetic expression '"+expression+"' declared in ini file could not be evaluated", AT);
-		
-		value.replace(pos_start, pos_end+2, IOUtils::toString(val));  //we also replace the closing "))"
-	}
-}
-
-/**
-* @brief Process keys that are standard variables
-* @details Variables are used as key = ${var} and can refere to keys that will be defined later.
-* @return false if the key has to be processed later (as in the case of standard variables refering to a key
-* that has not yet been read)
-*/
-bool ConfigParser::processVars(std::string& value, const std::string& section)
-{
-	//process standard variables
-	static const std::string var_marker( "${" );
-	static const size_t len_var_marker = var_marker.length();
-	bool var_fully_parsed = true;
-	size_t pos_start, pos_end = 0;
-	
-	while ((pos_start = value.find(var_marker, pos_end)) != std::string::npos) {
-		pos_end = value.find("}", pos_start);
-		if (pos_end==std::string::npos || pos_end<(pos_start+len_var_marker+1)) //at least one char between "${" and "}"
-			throw InvalidFormatException("Wrong syntax for variable: '"+value+"'", AT);
-		const size_t next_start = value.find("${", pos_start+len_var_marker);
-		if (next_start!=std::string::npos && next_start<pos_end)
-			throw InvalidFormatException("Wrong syntax for variable: '"+value+"'", AT);
-		
-		const size_t len = pos_end - (pos_start+len_var_marker); //we have tested above that this is >=1
-		std::string var( value.substr(pos_start+len_var_marker, len ) );
-		IOUtils::toUpper( var );
-		
-		const std::string var_section( extract_section( var ) ); //extract the section name out of the variable name
-		//since sections' headers are declared before the variables, every extracted section should be available in our sections
-		//list, so we can validate that it is indeed a proper section. if not, prepend with the section given as argument
-		const bool extracted_section_exists = sections.find(var_section) != sections.end();
-		if (!extracted_section_exists && !section.empty()) var = section+"::"+var;
-		if (properties.count( var )!=0) {
-			const std::string replacement( properties[var] );
-			value.replace(pos_start, pos_end+1, replacement); //we also replace the closing "}"
-			pos_end = pos_start; //so if it was replaced by another var, it will be scanned again
-		} else {
-			var_fully_parsed = false;
-		}
-	}
-	
-	if (!var_fully_parsed) return false;
-	
-	return true;
 }
 
 //resolve symlinks, resolve relative path w/r to the path of the current ini file
@@ -871,14 +784,13 @@ void ConfigParser::parseLine(const unsigned int& linenr, std::vector<std::string
 	if (IOUtils::readKeyValuePair(line, "=", key, value, true)) {
 		//if this is an import, process it and return
 		if (processImports(key, value, import_after, accept_import_before)) return;
-
-		processEnvVars( value );
-		processExpr( value );
-		if (!processVars(value, section)) {
-			deferred_vars.insert( section+"::"+key );
+		
+		if (value.find("${")==std::string::npos) { //normal key/value pair
+			properties[section+"::"+key] = value; //save the key/value pair
+		} else { //variables are handled separately
+			vars[ section+"::"+key ] = parseVariable(value); //it will be parsed and expanded later
 		}
-		if (key.find(' ')!=std::string::npos) throw InvalidFormatException("Invalid configuration key '"+section+"::"+key+"': keys can not contain spaces", AT);
-		properties[section+"::"+key] = value; //save the key/value pair
+		
 		accept_import_before = false; //this is not an import, so no further import_before allowed
 	} else {
 		handleNonKeyValue(line_backup, section, linenr, accept_import_before);
@@ -886,16 +798,229 @@ void ConfigParser::parseLine(const unsigned int& linenr, std::vector<std::string
 }
 
 //extract the section name from a section+"::"+key value
-std::string ConfigParser::extract_section(std::string key)
+std::string ConfigParser::extract_section(const std::string& key, const bool& provide_default)
 {
 	const std::string::size_type pos = key.find("::");
 
 	if (pos != string::npos){
 		const std::string sectionname( key.substr(0, pos) );
-		key.erase(key.begin(), key.begin() + pos + 2); //delete section name
 		return sectionname;
 	}
-	return std::string( defaultSection );
+	if (!provide_default)
+		return std::string();
+	else
+		return defaultSection;
 }
+
+
+bool ConfigParser::expandVar(const variable& var, const std::string& section, std::string &replacement) const
+{
+	if (var.type==ENV) { //environment variable
+		char *tmp = getenv( var.value.c_str() );
+		if (tmp==nullptr) 
+			throw InvalidNameException("Environment variable '"+var.value+"' declared in ini file could not be resolved", AT);
+		replacement = std::string(tmp);
+		return true;
+		
+	} else if (var.type==EXPR) { //arithmetic expression
+		int status;
+		const double val = te_interp(var.value.c_str(), &status);
+		if (status!=0)
+			throw InvalidNameException("Arithmetic expression '"+var.value+"' declared in ini file could not be evaluated", AT);
+		replacement = IOUtils::toString(val);
+		return true;
+	} else if (var.type==REF) { //reference to another variable
+		//reference to another key/value
+		std::string value_Up( IOUtils::strToUpper( var.value ) );
+		std::string var_section( extract_section( value_Up ) ); //extract the section name out of the variable name. If none is found, it will be empty
+		//since sections' headers are declared before the variables, every extracted section should be available in our sections
+		//list, so we can validate that it is indeed a proper section. if not, prepend with the section given as argument
+		const bool extracted_section_exists = sections.find(var_section) != sections.end();
+		if (!extracted_section_exists && !section.empty()) value_Up = section+"::"+value_Up;
+		if (properties.count( value_Up )!=0) {
+			replacement = properties.find(value_Up)->second;
+			return true;
+		}
+		if (vars.count( value_Up)==0) {
+			throw InvalidNameException("Reference to key '"+value_Up+"' declared in ini file does not exist", AT);
+		}
+		//if the key/value referred to is not ready yet (ie. not expanded), return false
+		return false;
+	}
+	
+	return false; //ROOT type does not require replacements
+}
+
+/** 
+ * @brief Tries to expand all the variables that are contained in the value string of a key/value
+ * @details
+ * The expansion of the variables is attempted in reverse order (starting from the end of the root string). When all the
+ * children of a particular node have been expanded, the value of the node itself will also be expanded again in reverse
+ * order. This guarantees that the positions in the string remain valid and don't have to be recomputed.
+ * 
+ * Two flags are returned: "hasSomeSuccesses" tells if at least one variable could be expanded (that had not been expanded before)
+ * and the return value tells if all the variables in the root string could be replaced in the root string.
+ * @param[in] vecVars all the variables (in a tree) that are present in the root string (including the root string at position zero)
+ * @param[in] section section of this key/value pair (for error messages)
+ * @param[in] hasSomeSuccesses set to true if at least one new variable vould be expanded
+ * @return true if all variables could be expanded and replaced in the root string
+ */
+bool ConfigParser::expandVarsForKey(std::vector<variable>& vecVars, const std::string& section, bool& hasSomeSuccesses)
+{
+	bool allSuccess = true;
+	
+	//we go through the vector representation of the tree in reverse order so we start with the children...
+	//for (size_t ii=(vecVars.size()-1); ii>0; ii--) { //at 0, there is the root expression that should not be called here
+	for (size_t ii=vecVars.size(); ii-- > 0; ) {
+		variable& var = vecVars[ii];
+		if (var.isExpanded) continue; //this variable has already been processed before
+		if (var.children_not_ready!=0) continue; //it still has at least one un-expanded child
+				
+		//for nodes having children that are all ready, perform the replacements, starting from the last so the positions remain correct
+		if (!var.children_idx.empty()) {
+			for (std::set<size_t>::const_reverse_iterator rit = var.children_idx.rbegin(); rit != var.children_idx.rend(); ++rit) {
+				const size_t child_idx = *rit;
+				size_t pos_offset = 0;
+				if (var.type!=ROOT) {
+					//parent position contains the variable markers which are missing in its "value" member
+					const size_t marker_offset = (var.type==EXPR)? 2 : (var.type==ENV)? 5 : 1; 
+					pos_offset = var.pos_start + marker_offset + 1;
+				}
+				const size_t relative_start_idx = vecVars[child_idx].pos_start - pos_offset;
+				const size_t length = vecVars[child_idx].pos_end - vecVars[child_idx].pos_start + 1;
+				var.value.replace(relative_start_idx, length, vecVars[child_idx].value);
+			}
+			var.children_idx.clear();
+		}
+		
+		if (var.type==ROOT) return allSuccess; //in ROOT, we perform replacements but no expansions
+		
+		//attempt to do variable expansion
+		std::string replacement;
+		const bool status = expandVar(var, section, replacement);
+		if (status) {
+			hasSomeSuccesses = true; //at least one variable could be expanded
+			var.value = replacement;
+			vecVars[ var.parent_idx ].children_not_ready--;
+			var.isExpanded = true;
+		} else {
+			allSuccess = false;
+		}
+	}
+	
+	return allSuccess;
+}
+
+/** 
+ * @brief Parse a value string to extract all variables that will require expansion
+ * @details
+ * Variables can be either environment variables ${env:XXX}, airthmetic expressions ${{XXX}} or references to other
+ * keys ${XXX}. Recursion is supported, such as ${{ ${SAMPLING_RATE}*60 + ${env:${MYOFFSET}_${MYVAR}} }}.
+ * The parsed variables are returned in the binary tree representation of a m-ary tree: each node may 
+ * have a parent, and multiple children. 
+ * 
+ * As a side note, having a different marker between env / vars and arithmetic expressions makes 
+ * parsing much more unpleasant...
+ * @param[in] value string to parse for variables
+ * @return vector of variables, organized as binary tree
+ */
+std::vector<ConfigParser::variable> ConfigParser::parseVariable(const std::string &value)
+{
+	const size_t max_len = value.length();
+	size_t start_pos = 0;
+	std::stack<size_t> variables_stack; //keep the indices of parents during recursion
+	std::vector<variable> variables_tree; //tree of the whole set of expressions in the value string
+	
+	//the root node contains the original value string associated with the key
+	variable tmp_root(value, 0, value.size(), ROOT);
+	variables_tree.push_back( tmp_root );
+	variables_stack.push( 0 );
+	
+	do {
+		const size_t pos_open = value.find("${", start_pos);
+		size_t pos_close = value.find("}", start_pos);	//for arithmetic expressions, we will increment it to contain the last '}'
+		const bool hasOpen = (pos_open!=std::string::npos);
+		const bool hasClose = (pos_close!=std::string::npos);
+		
+		if (!hasClose) {
+			if (hasOpen) { //we shall not open a new expression if there won't be any closing
+				throw InvalidFormatException("Invalid configuration key '"+value+"': the expressions will not be properly closed", AT);
+			} else { //no open, no close, there shall be no remaining expressions in the stack
+				if (variables_stack.size()>1) throw InvalidFormatException("Invalid configuration key '"+value + "' starting at position "+IOUtils::toString(variables_tree[variables_stack.top()].pos_start)+": remaining expressions are not properly closed", AT);
+				break; //all good: no open, no close, no stack
+			}
+		}
+		
+		//closing one remaining expression from the stack
+		if (!hasOpen || pos_open>pos_close) {
+			if (variables_stack.size()<2) throw InvalidFormatException("Invalid configuration key '"+value+"': closing an expression that has not been opened", AT);
+			const size_t parent_idx = variables_stack.top();
+			if (variables_tree[parent_idx].type==EXPR) {
+				const bool closeArithmExpr = (pos_close+1 < max_len && value[pos_close+1]=='}')? true : false;
+				if (!closeArithmExpr) throw InvalidFormatException("Invalid configuration key '"+value+"': not closing the current arithmetic expression", AT);
+				pos_close++; //to capture the additional '}'
+			}
+			
+			const size_t pos_start = variables_tree[parent_idx].pos_start;
+			const size_t pos_end = (variables_tree[parent_idx].pos_end!=IOUtils::npos) ? variables_tree[parent_idx].pos_end : pos_close; //it contains the additional '}'
+			const size_t content_begin = (variables_tree[parent_idx].type==EXPR ? pos_start+3 : (variables_tree[parent_idx].type==ENV ? pos_start+6 : pos_start+2));
+			const size_t content_end = (variables_tree[parent_idx].type==EXPR ? pos_end-2 : pos_end-1);
+			const std::string parsedVar( value.substr(content_begin, content_end-content_begin+1) );
+			variables_tree[parent_idx].finalize(parsedVar, pos_end);
+			start_pos = pos_end+1;
+			
+			variables_stack.pop();
+			continue;
+		}
+	
+		// from now one, pos_open<pos_close, starting a new expression
+		// identify if this is an arithmetic expression or Not
+		const bool isEnv = (pos_open+5 < max_len && value.substr(pos_open, 6)=="${env:")? true : false;
+		const bool isArithmExpr = (pos_open+2 < max_len && value[pos_open+2]=='{')? true : false;
+		const size_t pos_next_open = value.find("${", pos_open+2);
+		
+		// easy case: opening and closing, no recursion
+		if (pos_next_open==std::string::npos || (pos_next_open>pos_close)) {
+			// check that the closing matches the opening
+			if (isArithmExpr) {
+				const bool closingArithmExpr = (pos_close+1 < max_len && value[pos_close+1]=='}')? true : false;
+				if (!closingArithmExpr) throw InvalidFormatException("Invalid configuration key '"+value+"': the arithmetic expression is not properly closed", AT);
+				pos_close++; //to capture the additional '}'
+			}
+			const size_t content_begin = (isArithmExpr ? pos_open+3 : (isEnv ? pos_open+6 : pos_open+2));
+			const size_t content_end = (isArithmExpr ? pos_close-2 : pos_close-1);
+			const std::string parsedVar( value.substr(content_begin, content_end-content_begin+1) );
+			const VarType type = (isEnv)? ENV : (isArithmExpr)? EXPR : REF;
+			variable tmp_var(parsedVar, pos_open, pos_close, type);
+			
+			// set relationships
+			if (variables_stack.size()>1) {
+				const size_t parent_idx = variables_stack.top();
+				tmp_var.setParent( parent_idx );
+				variables_tree[parent_idx].setChild( variables_tree.size() ); //add this child
+			} else {
+				std::size_t parent_idx = 0;
+				tmp_var.setParent( parent_idx );
+				variables_tree[parent_idx].setChild( variables_tree.size() ); //this will be its own index as soon as the push is done
+			}
+			
+			variables_tree.push_back( tmp_var );
+			start_pos = pos_close+1;
+		} else { //recursion...
+			const VarType type = (isEnv)? ENV : (isArithmExpr)? EXPR : REF;
+			variable tmp_var(pos_open, type);
+			std::size_t parent_idx = variables_stack.top();
+			tmp_var.setParent( parent_idx );
+			variables_tree[parent_idx].setChild( variables_tree.size() ); //this will be its own index as soon as the push is done
+			
+			variables_tree.emplace_back( tmp_var );
+			variables_stack.push( variables_tree.size()-1 ); //keep track of the parent of upcoming variables
+			start_pos = (isArithmExpr)? pos_open+3 : pos_open+2;
+		}
+	} while (true);
+	
+	return variables_tree;
+}
+
 
 } //end namespace
