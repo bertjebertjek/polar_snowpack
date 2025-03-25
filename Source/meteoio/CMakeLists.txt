@@ -1,5 +1,5 @@
 #SPDX-License-Identifier: LGPL-3.0-or-later
-CMAKE_MINIMUM_REQUIRED(VERSION 3.1...3.27.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.1...3.31.6)
 LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/tools/cmake/")
 
 PROJECT(meteoio)
@@ -17,6 +17,7 @@ ENDIF()
 
 SET(LIBPREFIX "lib") #make sure ALL plugins are libXXX for ALL plateforms
 SET(CMAKE_IMPORT_LIBRARY_PREFIX "lib") #for Visual C++ import libraries
+SET(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 ###########################################################
 #platform specific. First, compiler specific flags, then system specific flags
@@ -126,29 +127,26 @@ SET(PROJ OFF CACHE BOOL "Use PROJ for the class MapProj ON or OFF")
 ###########################################################
 ## Additional Options
 ###########################################################
-SET(LIMIT_OUT_ACCESS OFF CACHE BOOL "Limit write access of the library to CWD")
-MARK_AS_ADVANCED(FORCE LIMIT_OUT_ACCESS)
-# SET(LIMIT_BASE_DIR ".")
-IF(LIMIT_OUT_ACCESS)
-	IF(MSVC)	#TODO: replace by add_compile_definitions(LIMIT_WRITE_ACCESS) when moving to cmake >=3.12 released 11.2018
-		ADD_DEFINITIONS(/LIMIT_WRITE_ACCESS)
+SET(RESTRICT_WRITE_ACCESS OFF CACHE BOOL "Limit write access of the library to a given directory (default: CWD)")
+MARK_AS_ADVANCED(FORCE RESTRICT_WRITE_ACCESS)
+IF(RESTRICT_WRITE_ACCESS)
+	IF(MSVC)	#TODO: replace by add_compile_definitions(RESTRICT_WRITE_ACCESS) when moving to cmake >=3.12 released 11.2018
+		ADD_DEFINITIONS(/RESTRICT_WRITE_ACCESS)
 	ELSE(MSVC)
-		ADD_DEFINITIONS(-DLIMIT_WRITE_ACCESS)
+		ADD_DEFINITIONS(-DRESTRICT_WRITE_ACCESS)
 	ENDIF(MSVC)
-	SET(LIMIT_BASE_DIR "." CACHE STRING "Limit write access of the library to the given directory")
-	IF(MSVC)	#TODO: replace by add_compile_definitions("LIMIT_BASE_DIR=\"${LIMIT_BASE_DIR}\"") when moving to cmake >=3.12 released 11.2018
-		ADD_DEFINITIONS(/LIMIT_BASE_DIR=\"${LIMIT_BASE_DIR}\")
+	SET(RESTRICTED_BASE_DIR "." CACHE STRING "Limit write access of the library to the given directory")
+	IF(MSVC)	#TODO: replace by add_compile_definitions("RESTRICTED_BASE_DIR=\"${RESTRICTED_BASE_DIR}\"") when moving to cmake >=3.12 released 11.2018
+		ADD_DEFINITIONS(/RESTRICTED_BASE_DIR=\"${RESTRICTED_BASE_DIR}\")
 	ELSE(MSVC)
-		ADD_DEFINITIONS(-DLIMIT_BASE_DIR=\"${LIMIT_BASE_DIR}\")
+		ADD_DEFINITIONS(-DRESTRICTED_BASE_DIR=\"${RESTRICTED_BASE_DIR}\")
 	ENDIF(MSVC)
 ENDIF()
 
 IF(CMAKE_CXX_COMPILER_ID MATCHES "^GNU$")
-	IF(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 5.0)
-		IF(PLUGIN_IMISIO) #HACK: current OCCI does not support the short strings optimizations of gcc>=5
-			SET(EXTRA "-D_GLIBCXX_USE_CXX11_ABI=0 ${EXTRA}")
-		ENDIF(PLUGIN_IMISIO)
-	ENDIF()
+	IF(PLUGIN_IMISIO) #HACK: current OCCI does not support the short strings optimizations of gcc>=5
+		SET(EXTRA "-D_GLIBCXX_USE_CXX11_ABI=0 ${EXTRA}")
+	ENDIF(PLUGIN_IMISIO)
 ENDIF()
 
 #show exception messages in a graphical message box
@@ -219,31 +217,13 @@ ADD_CUSTOM_TARGET(distclean make clean
 	COMMAND cmake -E remove "lib/libmeteo*.${DLL_EXT}" "lib/libmeteo*.${STAT_EXT}" "lib/libmeteo*.lib"
 	COMMAND cmake -E remove */CMakeCache.txt */CTestTestfile.cmake */cmake_install.cmake
 	COMMAND cmake -E remove */*/CMakeCache.txt */*/CTestTestfile.cmake */*/cmake_install.cmake
-	COMMAND cmake -E remove_directory CMakeFiles
+	COMMAND cmake -E remove_directory doc/examples/CMakeFiles applications/CMakeFiles
+	COMMAND cmake -E remove_directory CMakeFiles meteoio/CMakeFiles meteoio/*/CMakeFiles
 	COMMAND cmake -E remove_directory Testing
-	COMMAND cmake -E remove_directory meteoio/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/dataClasses/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/dataGenerators/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/meteoFilters/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/meteoLaws/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/meteoResampling/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/gridResampling/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/spatialInterpolations/CMakeFiles
-	COMMAND cmake -E remove_directory meteoio/plugins/CMakeFiles
-	COMMAND cmake -E remove_directory tests/CMakeFiles
-	COMMAND cmake -E remove_directory tests/Testing
-	COMMAND cmake -E remove_directory tests/meteo_reading_interpol/CMakeFiles
-	COMMAND cmake -E remove_directory tests/meteo_reading_interpol/Testing
-	COMMAND cmake -E remove_directory tests/meteo_reading_no_interpol/CMakeFiles
-	COMMAND cmake -E remove_directory tests/meteo_reading_no_interpol/Testing
-	COMMAND cmake -E remove_directory tests/sun/CMakeFiles
-	COMMAND cmake -E remove_directory tests/sun/Testing
+	COMMAND cmake -E remove_directory tests/CMakeFiles tests/*/CMakeFiles
+	COMMAND cmake -E remove_directory tests/Testing tests/*/Testing
 	COMMAND cmake -E remove tests/sun/generated_results.txt
-	COMMAND cmake -E remove_directory tests/dem_reading/CMakeFiles
-	COMMAND cmake -E remove_directory tests/dem_reading/Testing
 	COMMAND cmake -E remove tests/dem_reading/AZI.asc tests/dem_reading/DEM.asc tests/dem_reading/SLOPE.asc
-	COMMAND cmake -E remove_directory tests/2D_interpolations/CMakeFiles
-	COMMAND cmake -E remove_directory tests/2D_interpolations/Testing
 	COMMAND cmake -E remove tests/2D_interpolations/2009-01-19T12.00_HNW.asc tests/2D_interpolations/2009-01-19T12.00_RH.asc tests/2D_interpolations/2009-01-19T12.00_RSWR.asc tests/2D_interpolations/2009-01-19T12.00_TA.asc
 )
 
@@ -258,7 +238,11 @@ ADD_CUSTOM_TARGET(uninstall "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/c
 
 #Build the documentation if doxygen is found
 INCLUDE(FindDoxygen)
-FIND_PACKAGE(Doxygen)
+IF(CMAKE_VERSION VERSION_GREATER 3.9)
+	FIND_PACKAGE(Doxygen OPTIONAL_COMPONENTS dot)
+ELSE(CMAKE_VERSION VERSION_GREATER 3.9)
+	FIND_PACKAGE(Doxygen)
+ENDIF(CMAKE_VERSION VERSION_GREATER 3.9)
 if (DOXYGEN_FOUND)
 	ADD_CUSTOM_TARGET(doc COMMAND ${CMAKE_COMMAND} -E env MIO_VERSION="${_versionString}" "doxygen" ${PROJECT_SOURCE_DIR}/meteoio/config.dox)
 ENDIF (DOXYGEN_FOUND)
