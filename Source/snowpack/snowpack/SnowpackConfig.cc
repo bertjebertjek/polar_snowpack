@@ -88,7 +88,7 @@ bool SnowpackConfig::initStaticData()
 	advancedConfig["REDEPOSIT_KEEP_AGE"] = "false";
 	advancedConfig["RESEARCH"] = "true";
 	advancedConfig["SNOW_ALBEDO"] = "PARAMETERIZED";
-	advancedConfig["SNOW_EROSION"] = "false";
+	advancedConfig["SNOW_EROSION"] = "NONE"; // Main.cc checks for None, not for False! Copy code from snowdrift.cc that sets the snow erosion to None if false. 
 	advancedConfig["SNOW_REDISTRIBUTION"] = "false";
 	advancedConfig["SALTATION_MODEL"] = "SORENSEN";
 	advancedConfig["STRENGTH_MODEL"] = "DEFAULT";
