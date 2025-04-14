@@ -277,6 +277,11 @@ void SnowDrift::compSnowDrift(const CurrentMeteo& Mdata, SnowStation& Xdata, Sur
 				}
 			}
 
+			// If layer is too hard to erode, stop erosion? Ideally this should be dependent on wind speed, e.g. light wind can erode PP and DF, but not FC, but stronger wind can. 
+			// if EMS[e].rb > some_threshold_value_of_bond_size	break;  ///< Bond size in mm
+			if (EMS[e].theta[WATER] > SnowStation::thresh_moist_snow)	break ;			// If layer is too wet to erode, stop erosion?
+			if (EMS[e].theta[ICE] > 0.5) break; // Melt-freeze crust MFcr has vol. Ice content of 40-65% (?) 
+
 			// Continue with mass erosion:
 			if (massErode >= 0.95 * EMS[e].M) {
 				// Erode at most one element with a maximal error of +- 5 % on mass ...

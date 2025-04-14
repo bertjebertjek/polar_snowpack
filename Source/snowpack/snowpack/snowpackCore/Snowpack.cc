@@ -1429,9 +1429,14 @@ void Snowpack::setHydrometeorMicrostructure(const CurrentMeteo& Mdata, const boo
 			elem.dd = new_snow_dd;
 			elem.sp = new_snow_sp;
 			// Adapt dd and sp for blowing snow
-			if ((Mdata.vw > 5.) && ((variant == "ANTARCTICA" || variant == "POLAR")
-			|| (!SnLaws::jordy_new_snow && ((hn_density_parameterization == "BELLAIRE")
-			|| (hn_density_parameterization == "LEHNING_NEW"))))) {
+			if (
+				(Mdata.vw > 5.) && (
+					(variant == "ANTARCTICA" || variant == "POLAR")
+					|| 
+					(!SnLaws::jordy_new_snow && (
+						(hn_density_parameterization == "BELLAIRE")	|| (hn_density_parameterization == "LEHNING_NEW"))
+					)
+			)) {
 				elem.dd = new_snow_dd_wind;
 				elem.sp = new_snow_sp_wind;
 			} else if (vw_dendricity && ((hn_density_parameterization == "BELLAIRE")
@@ -1995,7 +2000,7 @@ void Snowpack::RedepositSnow(CurrentMeteo Mdata, SnowStation& Xdata, SurfaceFlux
 	double tmp_psum = redeposit_mass;
 	force_add_snowfall = true;
 	hn_density = "EVENT";
-	variant = "POLAR";		// Ensure that the ANTARCTICA wind speed limits are *not* used.
+	variant = "POLAR";		// Ensure that the ANTARCTICA wind speed limits are *not* used. BK: Note that 'normal' snowfall (i.e. with precip) occurs without this setting, leading to density differences (dd & sp)
 	enforce_measured_snow_heights = false;
 	Mdata.psum = redeposit_mass; Mdata.psum_ph = 0.;
 	// The EVENT scheme uses vw_avg and rh_avg in the calculations. In the REDEPOSIT scheme, we force the use of instantaneous values for wind speed and relative humidity:
