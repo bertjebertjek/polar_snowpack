@@ -86,6 +86,8 @@ void checkOldOutputFiles(const mio::Date& i_date, const std::string& stationID);
 
 double getPerpSensorPosition(const bool& useSoilLayers, const double& z_vert, const double& hs_ref, const double& Ground, const double& SlopeAngle);
 
+double interpolateSigmoid(double x, double center, double width, double ymin=0.2, double ymax=0.8);
+
 /**
  * @name MACRO definitions (to be replaced by proper functions some day)
  * TODO Move this definitions to Util.h, as functions to Util.c

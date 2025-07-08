@@ -2222,10 +2222,21 @@ void Snowpack::runSnowpackModel(CurrentMeteo& Mdata, SnowStation& Xdata, double&
 
 			// Redeposit eroded snow on same slope in case of snow_erosion=REDEPOSIT: 
 			if (snow_erosion == "REDEPOSIT" && Xdata.ErosionMass > 0. && !alpine3d) {
-				if (snow_redistribution && !Xdata.windward && !Xdata.leeward) {
-					// Redeposit snow if slope is 1) Main Station 2) not luv 3) not lee (lee deposition is handled by snow_redistribution in Main.cc)
+				// Redeposit snow if slope is 1) Main Station 2) not luv 3) not lee (lee deposition is handled by snow_redistribution in Main.cc)
+				if (snow_redistribution && !Xdata.windward && !Xdata.leeward) { 
 					RedepositSnow(Mdata, Xdata, Sdata, Xdata.ErosionMass);
-				}else if (!snow_redistribution)	{ // if snow_redistribution is not set, we redeposit snow on all slopes.
+				/** test: For windward slope; distribute eroded snow on luv and lee slopes depending on wind speed (ustar). 
+				 * This can be thought to repesent a split between saltation (redposited on same slope) and suspension (transported to lee - in Main.cc). 
+				 *  N.B. Make sure that these shares add up to 1 to prevent mass loss. 		 */ 
+				}else if (snow_redistribution && Xdata.windward) {
+					// double erosion_luv_rdp = 0.5 * Xdata.ErosionMass; //fixed frac for test
+					double erosion_luv_rdp = (1.0- snowdrift.suspended_fraction(Mdata, Xdata) ) * Xdata.ErosionMass; // 1- suspended_fraction is the saltation fraction
+					RedepositSnow(Mdata, Xdata, Sdata, erosion_luv_rdp);
+					// prn_msg(__FILE__, __LINE__, "msg", Mdata.date,
+					//           "Redeposit share: %.3f (%.3f kg m-2)  on luv slope (vw=%.1f m/s, ustar: %.1f)",// (azi=%.0f, slope=%.0f)",
+					//           (1.0- snowdrift.suspended_fraction(Mdata, Xdata) ) , erosion_luv_rdp , Mdata.vw, Mdata.ustar ); //Xdata.meta.getAzimuth(), Xdata.meta.getSlopeAngle());
+				// if snow_redistribution is not set, we redeposit snow on all slopes.
+				}else if (!snow_redistribution)	{ 
 					RedepositSnow(Mdata, Xdata, Sdata, Xdata.ErosionMass);
 				}
 			}

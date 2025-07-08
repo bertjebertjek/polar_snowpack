@@ -121,7 +121,7 @@ double SnowDrift::get_tau_thresh(const ElementData& Edata)
 	// Compute basic quantities that are needed: friction velocity, z0, threshold vw
 	// For now assume logarithmic wind profile; TODO change this later
 	const double weight = 0.02 * Constants::density_ice * (Edata.sp + 1.) * Constants::g * MM_TO_M(Edata.rg); // Does this accurately limit erosionof dense snow???
-	// weight = Edata.Rho*(Edata.sp + 1.)*Constants::g*MM_TO_M(Edata.rg);
+	// const double weight = Edata.Rho*(Edata.sp + 1.)*Constants::g*MM_TO_M(Edata.rg); // units are kg m-1 s-2 = N m-2 = Pa
 	const double sig = 300.;
 	const double binding = 0.0015 * sig * Edata.N3 * Optim::pow2(Edata.rb/Edata.rg);
 	const double tau_thresh = SnowDrift::schmidt_drift_fudge * (weight + binding);  // Original value for fudge: 1. (Schmidt)
@@ -387,4 +387,38 @@ void SnowDrift::compSnowDrift(const CurrentMeteo& Mdata, SnowStation& Xdata, Sur
 		Xdata.ErosionAge = Constants::undefined;
 	}
 	return;
+}
+
+/** @brief Split the erosion mass into a part that is saltating and a part that is suspended, based on ustar.
+ * The suspended fraction is later used to redistribute part of the eroded mass to the lee slope, while the
+ * saltating fraction can be redeposited onto the luv slope. (In setDataforCurrentTimeStep and runSnowpackModel, respectively).
+ * For now (2025-06-20), the split is based on a sigmoid function of the ustar_max, which is NOT based on any measurements, 
+ * just a heuristic guess that for increasing ustar above a ustar_threshold, the suspended fraction increases. Current min 
+ * & max values are set at 0.2 and 0.8, resp. 
+ * @param Mdata Current meteo data
+ * @param Xdata Current snow station data
+ * @param Sdata Current surface fluxes data	(not used) 
+ */
+double SnowDrift::suspended_fraction(const CurrentMeteo& Mdata, SnowStation& Xdata) //, SurfaceFluxes& Sdata)
+{
+
+	const double ustar_max = (Mdata.vw>0.1) ? Mdata.ustar * Mdata.vw_drift / Mdata.vw : 0.; // Scale Mdata.ustar
+	size_t nE = Xdata.Edata.size();
+	double x = ustar_max - SnowDrift::get_ustar_thresh(Xdata.Edata[nE-1]);
+	double width = .125; // width of the sigmoid function
+	double center = 0.5; // center of the sigmoid function (the ustar value at which the function is 0.5)
+	double ymin = 0.2; // minimum value of the sigmoid function (i.e minimum suspended fraction) 
+	double ymax = 0.8; // maximum value of the sigmoid function (i.e maximum suspended fraction)
+	double suspended_fraction  = interpolateSigmoid(x, center, width, ymin, ymax) ;  // default ymin=0.2, ymax=0.8
+
+	//set some liits for the suspended fraction
+	if ( ustar_max < SnowDrift::get_ustar_thresh(Xdata.Edata[nE-1]) ) {
+		suspended_fraction = 0.; // no suspension if ustar is below threshold (In theory no erosion should happen beow ustar_thresh, but just to be sure)
+	}
+	// // debug messages
+	// prn_msg(__FILE__, __LINE__, "msg", Mdata.date,
+	// 		"vw=%.2f m/s, ustar_max: %.2f, ustar_thr: %.3f, susp_frac:%.4f ",// (azi=%.0f, slope=%.0f)",
+	// 		Mdata.vw, ustar_max, SnowDrift::get_ustar_thresh(Xdata.Edata[nE-1]), suspended_fraction );
+
+	return suspended_fraction;
 }

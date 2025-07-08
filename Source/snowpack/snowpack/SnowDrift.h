@@ -41,6 +41,8 @@ class SnowDrift {
 
 		void compSnowDrift(const CurrentMeteo& Mdata, SnowStation& Xdata, SurfaceFluxes& Sdata, double& cumu_psum) const;
 
+		double suspended_fraction(const CurrentMeteo& Mdata, SnowStation& Xdata) ; // experimental: calculate suspended fraction of eroded mass based on ustar
+
 		static const double schmidt_drift_fudge;
 
  	private:

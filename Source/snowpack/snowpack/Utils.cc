@@ -26,6 +26,7 @@
 #include <snowpack/Utils.h>
 #include <assert.h>
 #include <cstdio>
+#include <cmath>
 
 using namespace std;
 using namespace mio;
@@ -595,4 +596,19 @@ void cumulate(double& accu, const double value)
 		accu = Constants::undefined;
 	}
 
+}
+
+/**
+ * @brief Interpolate a value using a sigmoid function
+ * @version 11.01
+ * @param x Input value
+ * @param center Center of the sigmoid
+ * @param width Width of the sigmoid
+ * @param ymin Minimum output value (default 0.2)
+ * @param ymax Maximum output value (default 0.8)
+ * @return Interpolated value in the range [ymin, ymax]
+ */
+double interpolateSigmoid(double x, double center, double width, double ymin, double ymax) { // default ymin=0.2, ymax=0.8
+    double s = 1.0 / (1.0 + std::exp(-(x - center) / width));  // Sigmoid in [0, 1]
+    return ymin + s * (ymax - ymin);  // Scale to [0.2, 0.8]
 }

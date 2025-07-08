@@ -697,9 +697,15 @@ inline void dataForCurrentTimeStep(CurrentMeteo& Mdata, SurfaceFluxes& surfFluxe
 					}
 				int El_bfr = vecXdata[slope.sector].getNumberOfElements();
 				const string density_redeposit = cfg.get("DENSITY_REDEPOSIT", "SnowpackAdvanced");
-				
-				Snowpack snowpack(cfg); // HACK: create a separate snowpack object to access the Redeposit and compSnowfall functions
-				snowpack.RedepositSnow(Mdata, vecXdata[slope.sector], surfFluxes, vecXdata[slope.luv].ErosionMass, density_redeposit);
+
+				/* TEST: split luv Erosion into luv-redeposition and lee-redistribution. Should become a function of ustar to represent
+				* saltation (luv-redeposition) and suspension that is carried over to lee slope? 
+				*/
+				// double erosion_lee_share = 0.5 * vecXdata[slope.luv].ErosionMass; // Note that this should be 1-erosion_luv_share , defined in Snowpak.cc ln 2233
+				SnowDrift snowdrift(cfg);
+				double erosion_lee_share =  snowdrift.suspended_fraction(Mdata, vecXdata[slope.luv]) * vecXdata[slope.luv].ErosionMass; 
+				Snowpack snowpack(cfg); // HACK: create a separate snowpack object to access the Redeposit and compSnowfall functions (outside of the real_main loop)
+				snowpack.RedepositSnow(Mdata, vecXdata[slope.sector], surfFluxes, erosion_lee_share, density_redeposit);
 				
 				// has snow actually been deposited??
 				if ( msg_deposit) {
